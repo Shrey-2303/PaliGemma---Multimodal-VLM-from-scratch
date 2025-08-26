@@ -1,6 +1,11 @@
 from typing import Optional, Tuple
 import torch 
 import torch.nn as nn 
+
+
+'''
+The main config class for the entire model
+'''
 class SiglipVisionConfig:
     def __init__(
         self,
@@ -30,9 +35,67 @@ class SiglipVisionConfig:
     
 
 
+'''
+This entire thing is basically to introduce non linearity and contextualize te embedding in higher dim and shrinking to original
+'''
+class SiglipMLP(nn.Module):
+    def __init__(self,config):
+        super.__init__()
+        self.config = config 
+        self.fc1 = nn.Linear(config.hidden_size, config.intermediate_size)
+        self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)
+        
+        
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        
+        hidden_states = self.fc1(hidden_states)
+        hidden_states = nn.functional.gelu(hidden_states, approximate="tanh")
+        hidden_states = self.fc2(hidden_states)
+        
+        return hidden_states
+        
 
 
-# this is a single layer pipeline for the transformer shown in 2_transformer_arch
+
+
+class SiglipAttention(nn.Module):
+    """ Multi head attention from original Attention is all you need paper"""
+    
+    def __init__(self,config):
+        super.__init__()
+        self.config = config
+        self.embed_dim = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        self.head_dim = self.embed_dim // self.num_heads
+        self.scale = self.head_dim** (-0.5)   ### 1/sqrt(head_dim)
+        self.dropout = config.attention_dropout
+        
+        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        
+    def forward(
+        self,
+        hidden_states: torch.Tensor,) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        
+        B, seq_len, _ = hidden_states.size() # [B, num_patches, Embed_dim]
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+        
+        # [B, num_heafs, num_patches, head_dim] -> output
+        query_states = query_states.view(B,seq_len, self.num_heads, self.head_dim).transpose(1,2)
+        key_states = key_states.view(B,seq_len, self.num_heads, self.head_dim).transpose(1,2)
+        value_states = value_states.view(B,seq_len, self.num_heads, self.head_dim).transpose(1,2)
+        pass
+
+
+
+
+'''
+This is a single layer pipeline for the transformer shown in 2_transformer_arch
+'''
 class SUglipEncoderLayer(nn.Module):
     def __init__(self, config:SiglipVisionConfig):
         super.__init__()
