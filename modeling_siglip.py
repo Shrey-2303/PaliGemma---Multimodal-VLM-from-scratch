@@ -84,19 +84,53 @@ class SiglipAttention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
         
-        # [B, num_heafs, num_patches, head_dim] -> output
+        # [B, num_heafs, num_patches, head_dim] * [B, Num_heads, head_dim, Num_patches]
         query_states = query_states.view(B,seq_len, self.num_heads, self.head_dim).transpose(1,2)
         key_states = key_states.view(B,seq_len, self.num_heads, self.head_dim).transpose(1,2)
         value_states = value_states.view(B,seq_len, self.num_heads, self.head_dim).transpose(1,2)
-        pass
+        
+        # calculating the atttention using the formula Q*K.t / sqrt(d_k)
+        attn_weights = (torch.matmul(query_states,key_states.transpose(2,3)) * self.scale)
+        
+        if attn_weights.size() != (B, self.num_heads, seq_len, seq_len):
+            raise ValueError(
+                f"Attention weights should be of size {(B, self.num_heads, seq_len, seq_len)}, but is "
+                f" {attn_weights.size()}"
+            )
+            
+        # now apply softmax for probs
+        attn_weights = nn.functional.softmax(attn_weights, dim = -1, dtype=torch.float32).to(query_states.dtype)
+        
+        # drop out but paper didnt use it
+        attn_weights = nn.functional.dropout(attn_weights, p = self.dropout, training = self.training)
+        
+        # multiply atttn with value states -> [B, num_heads,num_patches, head_dim]
+        attn_output = torch.matmul(attn_weights, value_states)
+        
+        if attn_output.size() != (B, self.num_heads, seq_len, self.head_dim):
+            raise ValueError(
+                f"attn_output should be of size {(B, self.num_heads, seq_len, self.head_dim)} instead it is"
+                f" {attn_output.size()}"
+            )
 
+        # [B, num_heads, num_patches, head_dim] -> [B, num_patches, num_heads, head_dim]
+        attn_output = attn_output.transpose(1,2).contiguous()
+        
+        # collapse and contatinate the heads
+        attn_output = attn_output.reshape(B, seq_len,self.embed_dim)
+        
+        # final projection so each head has some info from other heads
+        attn_output = self.out_proj(attn_output)
+        
+        return attn_output,attn_weights
+        
 
 
 
 '''
 This is a single layer pipeline for the transformer shown in 2_transformer_arch
 '''
-class SUglipEncoderLayer(nn.Module):
+class SiglipEncoderLayer(nn.Module):
     def __init__(self, config:SiglipVisionConfig):
         super.__init__()
         self.embed_dim = config.hidden_size
@@ -125,6 +159,24 @@ class SUglipEncoderLayer(nn.Module):
         return hidden_states
         
 
+
+class SiglipEncoder(nn.Module):
+    def __init__(self, config: SiglipVisionConfig):
+        self.config = config
+        self.layers = nn.ModuleList(
+            [SiglipEncoderLayer(config) for _ in range(config.num_hidden_layers)]
+        )
+        
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor) -> torch.Tensor:
+        
+        hidden_sttaes = inputs_embeds
+        for encoder_layer in self.layers:
+            # [B, num_patches, embed_dim] -> [B, num_patches, embed_dim]
+            hidden_states = encoder_layer(hidden_states)
+            
+        return hidden_states
 
 
 class SiglipVisionEmbeddings(nn.Module):
